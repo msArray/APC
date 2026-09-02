@@ -1,0 +1,4 @@
+credentials.json
+.venv/
+.ruff_cache
+APC
