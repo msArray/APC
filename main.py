@@ -1,16 +1,21 @@
 import os.path
+import re
+import sys
+import datetime
 import webbrowser
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import *
 
+from platformdirs import user_desktop_dir
+
 import pandas as pd
-import datetime
+
+from collections import defaultdict
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FILE_ID = "1NWb-HJxqwAPqQKzNxqZGQg8DRV0N5UwLBe0pT4FFKqM"
@@ -82,10 +87,12 @@ class Window(QWidget):
 
         self.courseId_label = QLabel(self, text="Enter Course ID")
 
+        # コースID入力
         self.courseId_Input = QLineEdit(self)
         self.courseId_Input.setFixedWidth(250)
         self.login_layout.addRow(self.courseId_label, self.courseId_Input)
 
+        # 開始日付入力
         self.startDate_label = QLabel(self, text="Enter Start Date")
         self.startDate_Input = QDateEdit(self)
         self.startDate_Input.setDisplayFormat("d/M/yyyy")
@@ -93,6 +100,7 @@ class Window(QWidget):
         self.startDate_Input.setFixedWidth(250)
         self.login_layout.addRow(self.startDate_label, self.startDate_Input)
 
+        # ログインボタン
         self.search_course_btn = QPushButton(self, text="Login")
         self.search_course_btn.setFixedWidth(120)
         self.search_course_btn.clicked.connect(self.search_course)
@@ -144,11 +152,6 @@ class Window(QWidget):
         self.courseInfo = None
 
         for idx, DBcourseId in enumerate(df["courseId"]):
-            # print(
-            #     self.startDate_Input.text() == df.iloc[idx].get("startDate"),
-            #     self.startDate_Input.text(),
-            #     df.iloc[idx].get("startDate"),
-            # )
             if (
                 DBcourseId
                 == self.courseId_Input.text()  # CSVに保存されているコースIDと入力されたコースIDが一緒か
@@ -171,10 +174,173 @@ class Window(QWidget):
         pass
 
     def setup_action(self):
-        desktop_path = os.path.join(os.path.join(os.environ["USERPROFILE"]), "Desktop")
+        # SetUpボタンを押された時の動作
+        desktop_path = user_desktop_dir()
+        print(f"{desktop_path}/APC")
 
+        # デスクトップにAPCディレクトリがなければ生成
         if not os.path.exists(f"{desktop_path}/APC"):
             os.makedirs(f"{desktop_path}/APC")
+
+        if creds is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Credentials Not Found!")
+            dlg.resize(200, 120)
+            dlg_label = QLabel("⚠Credentials.json Not Found.\nCheck it.", dlg)
+            dlg.exec()
+            return
+
+        try:
+            service = build("drive", "v3", credentials=creds)
+
+            # Call the Drive v3 API
+            # ディレクトリ内のアイテムをリストアップ、再帰的に数を数える
+            print(self.courseInfo.get("driveUrl"))
+            extract_id = re.findall(
+                r"https://drive.google.com/drive/folders/([0-9a-zA-Z\-]+)\?usp=sharing",
+                self.courseInfo.get("driveUrl"),
+            )
+            print(extract_id[0])
+
+            count_dl_files = self.count_files_in_folder(service, extract_id[0])
+            downloaded_count = 0
+
+            QWidget().setLayout(self.layout())
+            self.dl_progress_layout = QVBoxLayout(self)
+            self.count_dl = QLabel(f"{downloaded_count}/{count_dl_files}", self)
+            self.dl_progress_layout.addWidget(self.count_dl)
+
+            self.dl_progress_bar = QProgressBar(self)
+            self.dl_progress_bar.setValue(downloaded_count)
+            self.dl_progress_bar.setMaximum(count_dl_files)
+            self.dl_progress_layout.addWidget(self.dl_progress_bar)
+            self.setLayout(self.dl_progress_layout)
+            self.update()
+
+            results = (
+                service.files()
+                .list(
+                    q=f"'{extract_id[0]}' in parents and trashed = false",
+                    fields="files(id, name, mimeType)",
+                )
+                .execute()
+            )
+            print(results)
+            dl_target = results.get("files")
+            
+            
+            for item in dl_target:
+                if item.get("mimeType") == "application/vnd.google-apps.folder":
+                    results = (
+                        service.files()
+                        .list(
+                            q=f"'{item.get("id")}' in parents and trashed = false",
+                            fields="files(id, name, mimeType)",
+                        )
+                        .execute()
+                    )
+
+                    for file in results.get("files"):
+                        if file.get("aditional_dir"):
+                            file["additional_dir"] = f"{file.get("aditional_dir")}/{item.get("name")}"
+                        else:
+                            file["additional_dir"] = f"/{item.get("name")}"
+
+                        dl_target.append(file)
+                    continue
+
+                dl_binary = (
+                    service.files()
+                    .get_media(fileId=item.get("id"))
+                    .execute()
+                )
+
+                if item.get("additional_dir"):
+                    if not os.path.exists(f"{desktop_path}/APC/{item.get("additional_dir")}"):
+                        os.makedirs(f"{desktop_path}/APC/{item.get("additional_dir")}")
+                    with open(f"{desktop_path}/APC/{item.get("additional_dir")}/{item.get("name")}", "wb") as w_dlf:
+                        w_dlf.write(dl_binary)                
+                else:
+                    with open(f"{desktop_path}/APC/{item.get("name")}", "wb") as w_dlf:
+                        w_dlf.write(dl_binary)
+                
+                downloaded_count += 1
+                self.count_dl.text = f"{downloaded_count}/{count_dl_files}"
+                self.dl_progress_bar.setValue(downloaded_count)
+                self.update()
+                
+
+        except HttpError as error:
+            # TODO(developer) - Handle errors from drive API.
+            dlg = QDialog()
+            dlg.setWindowTitle("Error !")
+            dlg.resize(200, 120)
+            dlg_label = QLabel(
+                "⚠An error occurred\n while connecting to Google Drive.", dlg
+            )
+            dlg.exec()
+            print(f"An error occurred: {error}")
+            exit(-1)
+        pass
+
+
+    def count_files_in_folder(self, service, root_folder_id):
+        query = "trashed = false"
+
+        # We only need 'id', 'mimeType', and 'parents' to build the tree structure
+        fields = "nextPageToken, files(id, mimeType, parents)"
+
+        all_items = []
+        page_token = None
+
+        print("Fetching files from Google Drive...")
+        while True:
+            results = (
+                service.files()
+                .list(
+                    q=query,
+                    fields=fields,
+                    pageSize=1000,  # Maximize page size to reduce API calls
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+
+            all_items.extend(results.get("files", []))
+            page_token = results.get("nextPageToken", None)
+            if not page_token:
+                break
+
+        # 2. Map items out into a parent -> children dictionary mapping
+        # Maps a parent folder ID to a list of its child objects
+        children_map = defaultdict(list)
+        for item in all_items:
+            parents = item.get("parents", [])
+            for p in parents:
+                children_map[p].append(item)
+
+        # 3. Use Depth-First Search (DFS) to traverse down from the root_folder_id
+        total_file_count = 0
+        folders_to_process = [root_folder_id]
+        visited_folders = set()  # Prevents infinite loops in shared shortcut scenarios
+
+        print("Calculating recursive totals...")
+        while folders_to_process:
+            current_folder = folders_to_process.pop()
+            if current_folder in visited_folders:
+                continue
+            visited_folders.add(current_folder)
+
+            # Get all child items for the current folder node
+            for child in children_map.get(current_folder, []):
+                if child["mimeType"] == "application/vnd.google-apps.folder":
+                    # If it's a subfolder, add it to the queue to process its contents
+                    folders_to_process.append(child["id"])
+                else:
+                    # If it's a file, increment the counter
+                    total_file_count += 1
+
+        return total_file_count
 
     def o_submit_act(self):
         webbrowser.open(self.courseInfo.get("submitFormUrl"))
@@ -188,26 +354,45 @@ class Window(QWidget):
 def main():
     App = QApplication(sys.argv)
 
+    global creds
     creds = None
+
     if os.path.exists("credentials.json"):
         creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
     else:
+        dlg = QDialog()
+        dlg.setWindowTitle("Credentials Not Found!")
+        dlg.resize(200, 120)
+        dlg_label = QLabel("⚠Credentials.json Not Found.\nCheck it.", dlg)
+        dlg.exec()
         exit(-1)
 
-    try:
-        service = build("drive", "v3", credentials=creds)
+    if creds is not None:
+        try:
+            service = build("drive", "v3", credentials=creds)
 
-        # Call the Drive v3 API
-        results = service.files().export(fileId=FILE_ID, mimeType="text/csv").execute()
-        # print(results)
-        with open("./" + "APC", "wb") as w_f:
-            w_f.write(results)
+            # Call the Drive v3 API
+            results = (
+                service.files().export(fileId=FILE_ID, mimeType="text/csv").execute()
+            )
+            # print(results)
+            with open("./" + "APC", "wb") as w_f:
+                w_f.write(results)
 
-    except HttpError as error:
-        # TODO(developer) - Handle errors from drive API.
-        print(f"An error occurred: {error}")
+            window = Window()
 
-    Window()
+        except HttpError as error:
+            # TODO(developer) - Handle errors from drive API.
+            dlg = QDialog()
+            dlg.setWindowTitle("Error !")
+            dlg.resize(200, 120)
+            dlg_label = QLabel(
+                "⚠An error occurred\n while connecting to Google Drive.", dlg
+            )
+            dlg.exec()
+            print(f"An error occurred: {error}")
+            exit(-1)
+
     sys.exit(App.exec())
 
 
