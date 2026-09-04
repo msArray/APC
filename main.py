@@ -16,6 +16,9 @@ from platformdirs import user_desktop_dir
 import pandas as pd
 
 from collections import defaultdict
+import asyncio
+import aiofiles
+from qasync import *
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FILE_ID = "1NWb-HJxqwAPqQKzNxqZGQg8DRV0N5UwLBe0pT4FFKqM"
@@ -23,7 +26,7 @@ FILE_NAME = "APC"
 
 
 class Window(QWidget):
-    def __init__(self):
+    def __init__(self, loop=None):
         super().__init__()
         self.setWindowTitle("APC")
         self.resize(400, 300)
@@ -76,6 +79,7 @@ class Window(QWidget):
         }
         """)
         self.UIinit()
+        self.loop = loop or asyncio.get_event_loop()
 
     def UIinit(self):
         self.login_layout = QFormLayout()
@@ -105,29 +109,40 @@ class Window(QWidget):
         self.search_course_btn.setFixedWidth(120)
         self.search_course_btn.clicked.connect(self.search_course)
         self.login_layout.addRow(self.search_course_btn)
-        self.show()
 
         self.setLayout(self.login_layout)
 
-    def submitUI(self, courseId):
+    def submitUI(self):
         QWidget().setLayout(self.layout())
-        self.submit_layout = QGridLayout(self)
+        self.submit_layout = QVBoxLayout(self)
+        
+        self.submit_tab_header = QLabel("ACP")
+        self.submit_layout.addWidget(self.submit_tab_header)
+        
+        self.submit_btns = QWidget()
+        self.submit_btns_layout = QGridLayout(self)
+        self.submit_btns.setLayout(self.submit_btns_layout)
 
-        self.cleanup_btn = QPushButton(self, text="Clean UP")
-        self.submit_layout.addWidget(self.cleanup_btn, 0, 0)
+        self.cleanup_btn = QPushButton(self, text="Clean Up")
+        self.submit_btns_layout.addWidget(self.cleanup_btn, 0, 0)
         self.cleanup_btn.clicked.connect(self.cleanup_action)
 
-        self.setup_btn = QPushButton(self, text="SetUp")
+        self.setup_btn = QPushButton(self, text="Set Up")
         self.setup_btn.clicked.connect(self.setup_action)
-        self.submit_layout.addWidget(self.setup_btn, 1, 0)
+        self.submit_btns_layout.addWidget(self.setup_btn, 0, 1)
 
-        self.open_submit_btn = QPushButton(self, text="Submit")
-        self.submit_layout.addWidget(self.open_submit_btn, 0, 1)
+        self.open_submit_btn = QPushButton(self, text="Submit Deliverables")
+        self.submit_btns_layout.addWidget(self.open_submit_btn, 1, 0)
         self.open_submit_btn.clicked.connect(self.o_submit_act)
 
-        self.open_survey_btn = QPushButton(self, text="Survey")
-        self.submit_layout.addWidget(self.open_survey_btn, 1, 1)
+        self.open_survey_btn = QPushButton(self, text="Open Survey")
+        self.submit_btns_layout.addWidget(self.open_survey_btn, 1, 1)
         self.open_survey_btn.clicked.connect(self.o_survey_act)
+        
+        self.submit_layout.addWidget(self.submit_btns)
+
+        self.submit_tab_message = QLabel("")
+        self.submit_layout.addWidget(self.submit_tab_message)
 
         self.setLayout(self.submit_layout)
         self.update()
@@ -164,16 +179,17 @@ class Window(QWidget):
             ):
                 # print(f"{DBcourseId} was matched")
                 isMatch = True
-                courseId = DBcourseId
+                # courseId = DBcourseId
                 self.courseInfo = df.iloc[idx]
 
         if isMatch:
-            self.submitUI(courseId)
+            self.submitUI()
 
     def cleanup_action(self):
         pass
 
-    def setup_action(self):
+    @asyncSlot()
+    async def setup_action(self):
         # SetUpボタンを押された時の動作
         desktop_path = user_desktop_dir()
         print(f"{desktop_path}/APC")
@@ -202,7 +218,7 @@ class Window(QWidget):
             )
             print(extract_id[0])
 
-            count_dl_files = self.count_files_in_folder(service, extract_id[0])
+            count_dl_files = await self.count_files_in_folder(service, extract_id[0])
             downloaded_count = 0
 
             QWidget().setLayout(self.layout())
@@ -227,8 +243,7 @@ class Window(QWidget):
             )
             print(results)
             dl_target = results.get("files")
-            
-            
+
             for item in dl_target:
                 if item.get("mimeType") == "application/vnd.google-apps.folder":
                     results = (
@@ -242,33 +257,37 @@ class Window(QWidget):
 
                     for file in results.get("files"):
                         if file.get("aditional_dir"):
-                            file["additional_dir"] = f"{file.get("aditional_dir")}/{item.get("name")}"
+                            file["additional_dir"] = (
+                                f"{file.get("aditional_dir")}/{item.get("name")}"
+                            )
                         else:
                             file["additional_dir"] = f"/{item.get("name")}"
 
                         dl_target.append(file)
                     continue
 
-                dl_binary = (
-                    service.files()
-                    .get_media(fileId=item.get("id"))
-                    .execute()
-                )
+                dl_binary = service.files().get_media(fileId=item.get("id")).execute()
 
                 if item.get("additional_dir"):
-                    if not os.path.exists(f"{desktop_path}/APC/{item.get("additional_dir")}"):
+                    if not os.path.exists(
+                        f"{desktop_path}/APC/{item.get("additional_dir")}"
+                    ):
                         os.makedirs(f"{desktop_path}/APC/{item.get("additional_dir")}")
-                    with open(f"{desktop_path}/APC/{item.get("additional_dir")}/{item.get("name")}", "wb") as w_dlf:
-                        w_dlf.write(dl_binary)                
+                    async with aiofiles.open(
+                        f"{desktop_path}/APC/{item.get("additional_dir")}/{item.get("name")}",
+                        "wb",
+                    ) as w_dlf:
+                        await w_dlf.write(dl_binary)
                 else:
-                    with open(f"{desktop_path}/APC/{item.get("name")}", "wb") as w_dlf:
-                        w_dlf.write(dl_binary)
-                
+                    async with aiofiles.open(
+                        f"{desktop_path}/APC/{item.get("name")}", "wb"
+                    ) as w_dlf:
+                        await w_dlf.write(dl_binary)
+
                 downloaded_count += 1
-                self.count_dl.text = f"{downloaded_count}/{count_dl_files}"
+                self.count_dl.setText(f"{downloaded_count}/{count_dl_files}")
                 self.dl_progress_bar.setValue(downloaded_count)
                 self.update()
-                
 
         except HttpError as error:
             # TODO(developer) - Handle errors from drive API.
@@ -281,10 +300,11 @@ class Window(QWidget):
             dlg.exec()
             print(f"An error occurred: {error}")
             exit(-1)
-        pass
 
+        self.submitUI()
+        self.submit_tab_message.setText("Files have been downloaded.")
 
-    def count_files_in_folder(self, service, root_folder_id):
+    async def count_files_in_folder(self, service, root_folder_id):
         query = "trashed = false"
 
         # We only need 'id', 'mimeType', and 'parents' to build the tree structure
@@ -351,8 +371,10 @@ class Window(QWidget):
         pass
 
 
-def main():
+async def main():
     App = QApplication(sys.argv)
+    loop = QEventLoop(App)
+    asyncio.set_event_loop(loop)
 
     global creds
     creds = None
@@ -379,7 +401,10 @@ def main():
             with open("./" + "APC", "wb") as w_f:
                 w_f.write(results)
 
-            window = Window()
+            window = Window(loop)
+            window.show()
+            with loop:
+                loop.run_forever()
 
         except HttpError as error:
             # TODO(developer) - Handle errors from drive API.
@@ -393,8 +418,8 @@ def main():
             print(f"An error occurred: {error}")
             exit(-1)
 
-    sys.exit(App.exec())
+    # sys.exit(App.exec())
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
