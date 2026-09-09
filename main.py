@@ -3,12 +3,13 @@ import re
 import sys
 import datetime
 import webbrowser
+import shutil
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QMetaObject, QModelIndex, Slot
 from PySide6.QtWidgets import *
 
 from platformdirs import user_desktop_dir
@@ -20,6 +21,11 @@ import asyncio
 import aiofiles
 from qasync import *
 
+from file_tree import FileTreeSelectorModel
+
+from docx import Document
+import win32com.client
+
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FILE_ID = "1NWb-HJxqwAPqQKzNxqZGQg8DRV0N5UwLBe0pT4FFKqM"
 FILE_NAME = "APC"
@@ -29,7 +35,7 @@ class Window(QWidget):
     def __init__(self, loop=None):
         super().__init__()
         self.setWindowTitle("APC")
-        self.resize(400, 300)
+        self.resize(640, 320)
 
         self.setStyleSheet("""
         QLineEdit,QDateEdit {
@@ -79,6 +85,7 @@ class Window(QWidget):
         }
         """)
         self.UIinit()
+        QMetaObject.connectSlotsByName(self)
         self.loop = loop or asyncio.get_event_loop()
 
     def UIinit(self):
@@ -105,20 +112,28 @@ class Window(QWidget):
         self.login_layout.addRow(self.startDate_label, self.startDate_Input)
 
         # ログインボタン
+        self.st_seac_h_box = QWidget(self)
+        self.st_seac_h_box_layout = QHBoxLayout()
+        self.st_seac_h_box_layout.addStretch(1)
+        self.st_seac_h_box.setLayout(self.st_seac_h_box_layout)
+
         self.search_course_btn = QPushButton(self, text="Login")
         self.search_course_btn.setFixedWidth(120)
         self.search_course_btn.clicked.connect(self.search_course)
-        self.login_layout.addRow(self.search_course_btn)
+
+        self.st_seac_h_box_layout.addWidget(self.search_course_btn)
+
+        self.login_layout.addRow(self.st_seac_h_box)
 
         self.setLayout(self.login_layout)
 
     def submitUI(self):
         QWidget().setLayout(self.layout())
         self.submit_layout = QVBoxLayout(self)
-        
+
         self.submit_tab_header = QLabel("ACP")
         self.submit_layout.addWidget(self.submit_tab_header)
-        
+
         self.submit_btns = QWidget()
         self.submit_btns_layout = QGridLayout(self)
         self.submit_btns.setLayout(self.submit_btns_layout)
@@ -138,8 +153,12 @@ class Window(QWidget):
         self.open_survey_btn = QPushButton(self, text="Open Survey")
         self.submit_btns_layout.addWidget(self.open_survey_btn, 1, 1)
         self.open_survey_btn.clicked.connect(self.o_survey_act)
-        
+
         self.submit_layout.addWidget(self.submit_btns)
+
+        self.quit_btn = QPushButton(self, text="Quit")
+        self.submit_btns_layout.addWidget(self.quit_btn, 2, 0)
+        self.quit_btn.clicked.connect(self.quit_act)
 
         self.submit_tab_message = QLabel("")
         self.submit_layout.addWidget(self.submit_tab_message)
@@ -147,7 +166,11 @@ class Window(QWidget):
         self.setLayout(self.submit_layout)
         self.update()
 
-    def search_course(self, courseId):
+    def quit_act(self):
+        self.loop.stop()
+        sys.exit(0)
+
+    def search_course(self):
         # print("clicked!")
         df = pd.read_csv(
             f"./{FILE_NAME}",
@@ -186,13 +209,37 @@ class Window(QWidget):
             self.submitUI()
 
     def cleanup_action(self):
-        pass
+        QWidget().setLayout(self.layout())
+        self.cleanup_layout = QVBoxLayout(self)
+        apc = QLabel("APC")
+        apc.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.cleanup_layout.addWidget(apc)
+        warn_msg = QLabel("Warning: Files will be Deleted")
+        warn_msg.setStyleSheet("font-size: 22px; font-weight: bold;")
+        self.cleanup_layout.addWidget(warn_msg)
+        warn_detail = QLabel(
+            "・All APC files and files stored in the Downloads folder will be permanently deleted.\n・If you need to keep any of these files, please back them up before proceeding.\n・Deleted files may not be recoverable.",
+        )
+        self.cleanup_layout.addWidget(warn_detail)
+
+        self.cleanfiles_btn = QPushButton("Clean Files")
+        self.cleanfiles_btn.clicked.connect(self.clean_files)
+        self.cleanup_layout.addWidget(self.cleanfiles_btn)
+        self.setLayout(self.cleanup_layout)
+
+    def clean_files(self):
+        desktop_path = user_desktop_dir()
+        # デスクトップにAPCディレクトリがあれば削除
+        if os.path.exists(f"{desktop_path}/APC"):
+            shutil.rmtree(f"{desktop_path}/APC")
+        
+        self.submitUI()
+        self.submit_tab_message.setText("APC Directory was deleted")
 
     @asyncSlot()
     async def setup_action(self):
         # SetUpボタンを押された時の動作
         desktop_path = user_desktop_dir()
-        print(f"{desktop_path}/APC")
 
         # デスクトップにAPCディレクトリがなければ生成
         if not os.path.exists(f"{desktop_path}/APC"):
@@ -221,11 +268,13 @@ class Window(QWidget):
             count_dl_files = await self.count_files_in_folder(service, extract_id[0])
             downloaded_count = 0
 
+            # ダウンロード済みファイル数　完了数/予定数
             QWidget().setLayout(self.layout())
             self.dl_progress_layout = QVBoxLayout(self)
             self.count_dl = QLabel(f"{downloaded_count}/{count_dl_files}", self)
             self.dl_progress_layout.addWidget(self.count_dl)
 
+            # プログレスバー
             self.dl_progress_bar = QProgressBar(self)
             self.dl_progress_bar.setValue(downloaded_count)
             self.dl_progress_bar.setMaximum(count_dl_files)
@@ -233,6 +282,7 @@ class Window(QWidget):
             self.setLayout(self.dl_progress_layout)
             self.update()
 
+            # Google APIから対象ディレクトリ直下のファイルを取得する。
             results = (
                 service.files()
                 .list(
@@ -244,6 +294,8 @@ class Window(QWidget):
             print(results)
             dl_target = results.get("files")
 
+            # ターゲットのファイルから、ディレクトリならその中のものをすべてdl_targetに入れファイルならダウンロード
+            # フォルダの中にあるファイルはadditional_dirにディレクトリ構造を追加
             for item in dl_target:
                 if item.get("mimeType") == "application/vnd.google-apps.folder":
                     results = (
@@ -284,13 +336,15 @@ class Window(QWidget):
                     ) as w_dlf:
                         await w_dlf.write(dl_binary)
 
+                # ダウンロード数、プログレスバーの更新
                 downloaded_count += 1
                 self.count_dl.setText(f"{downloaded_count}/{count_dl_files}")
                 self.dl_progress_bar.setValue(downloaded_count)
                 self.update()
-
+        # Google Drive http エラー
+        # 多分、ネットがつながらないときとか
         except HttpError as error:
-            # TODO(developer) - Handle errors from drive API.
+            # エラー時はダイアログを出して終了
             dlg = QDialog()
             dlg.setWindowTitle("Error !")
             dlg.resize(200, 120)
@@ -301,6 +355,7 @@ class Window(QWidget):
             print(f"An error occurred: {error}")
             exit(-1)
 
+        # submitUIに切り替え、ダウンロード完了メッセージ表示
         self.submitUI()
         self.submit_tab_message.setText("Files have been downloaded.")
 
@@ -362,9 +417,187 @@ class Window(QWidget):
 
         return total_file_count
 
-    def o_submit_act(self):
+    @asyncSlot()
+    async def o_submit_act(self):
+        QWidget().setLayout(self.layout())
+        # ヘッダー
+        self.sb_tab_layout = QVBoxLayout(self)
+        self.sb_tab_header = QLabel(self, text="APC")
+        self.sb_tab_layout.addWidget(self.sb_tab_header)
+
+        # ファイルツリー
+        desktop_path = user_desktop_dir()
+        self.file_tree_model = FileTreeSelectorModel(rootpath=f"{desktop_path}/APC/")
+
+        self.f_tree_view = QTreeView()
+
+        self.f_tree_view.setObjectName("Deliverables")
+        self.f_tree_view.setAnimated(False)
+        self.f_tree_view.setIndentation(20)
+        self.f_tree_view.setSortingEnabled(True)
+        self.f_tree_view.setColumnWidth(200, 120)
+
+        # Attach Model to View
+        self.f_tree_view.setModel(self.file_tree_model)
+        self.f_tree_view.setRootIndex(self.file_tree_model.parent_index)
+        self.sb_tab_layout.addWidget(self.f_tree_view)
+        # 下のContinue ボタン
+        self.sb_continue_btn = QPushButton(self, text="Continue")
+        self.sb_continue_btn.clicked.connect(self.enter_uid)
+        self.sb_tab_layout.addWidget(self.sb_continue_btn)
+
+        self.setLayout(self.sb_tab_layout)
+        # webbrowser.open(self.courseInfo.get("submitFormUrl"))
+
+    def enter_uid(self):
+        QWidget().setLayout(self.layout())
+        self.sb_uid_layout = QVBoxLayout(self)
+        w = QWidget()
+        v = QHBoxLayout(self)
+        w.setLayout(v)
+        self.ent_uid_label = QLabel(self, text="Enter Username")
+        v.addWidget(self.ent_uid_label)
+
+        # ユーザー名の入力
+        self.uid_Input = QLineEdit(self)
+        self.uid_Input.setFixedWidth(250)
+        v.addWidget(self.uid_Input)
+        self.sb_uid_layout.addWidget(w)
+
+        # 下のContinue ボタン
+        self.sb_uid_continue_btn = QPushButton(self, text="Continue")
+        self.sb_uid_continue_btn.clicked.connect(self.create_submit)
+        self.sb_uid_layout.addWidget(self.sb_uid_continue_btn)
+
+        self.setLayout(self.sb_uid_layout)
+
+    def create_submit(self):
+        ### Wordファイルの作成
+        paths = self.file_tree_model.getCheckedFilepaths()
+        uid = self.uid_Input.text()
+
+        uid = re.sub(r'[\\/:*?"<>|]', "_", uid)
+
+        if not uid:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "UIDを入力してください。",
+            )
+            return
+        desktop_path = user_desktop_dir()
+        output_dir = os.path.join(desktop_path, "APC")
+        os.makedirs(output_dir, exist_ok=True)
+
+        output_path = os.path.join(
+            output_dir,
+            f"Submission - {uid}.docx",
+        )
+
+        if os.path.exists(output_path):
+            try:
+                # 削除できれば、Word等では使用されていない
+                os.remove(output_path)
+
+            except PermissionError:
+                QMessageBox.warning(
+                    self,
+                    "File is in use",
+                    (
+                        "The Word document is currently open.\n\n"
+                        f"{output_path}\n\n"
+                        "Please close the document in Microsoft Word "
+                        "and try again."
+                    ),
+                )
+                return
+
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = True
+
+        doc = word.Documents.Add()
+
+        doc.ActiveWindow.Caption = f"Submission - {uid}"
+
+        # Wordのカーソル
+        selection = word.Selection
+
+        # 文書先頭にカーソルを置く
+        selection.SetRange(doc.Content.Start, doc.Content.Start)
+
+        # 1行目
+        selection.TypeText("Embedded Files:")
+
+        # Enter → 2行目へ
+        selection.TypeParagraph()
+
+        # この時点でカーソルは2行目
+        for file_path in paths:
+            file_path = os.path.abspath(file_path)
+
+            # File埋め込み
+            ole = selection.InlineShapes.AddOLEObject(
+                ClassType="Package",
+                FileName=file_path,
+                LinkToFile=False,
+                DisplayAsIcon=True,
+                IconLabel=os.path.basename(file_path),
+            )
+
+            # アイコン表示は前回正常だった設定を維持
+            ole.OLEFormat.DisplayAsIcon = True
+            ole.OLEFormat.IconLabel = os.path.basename(file_path)
+
+            # カーソルを今追加したOLEの「直後」へ移動
+            selection.SetRange(ole.Range.End, ole.Range.End)
+
+        # 最後に次の行へ
+        if paths:
+            selection.TypeParagraph()
+
+        doc.SaveAs2(f"{desktop_path}\\APC\\Submission - {uid}.docx")
+
+        # 送信フォーム開いたりするページの作成
+        QWidget().setLayout(self.layout())
+        l = QVBoxLayout()
+        dtlbl_h = QLabel(self, text=f"Steps to submit Deliverables:")
+        dtlbl_h.setStyleSheet("""
+        QLabel {
+            font-size: 22px;
+            font-weight: bold;
+        }                      
+        """)
+        dtlbl_1 = QLabel(self, text=f"1. Sign into FormSG with SingPass")
+        dtlbl_2 = QLabel(
+            self,
+            text=f'2. Drag and drop/Attached generated word document in APC file(<a href="{desktop_path}\\APC\\Submission - {uid}.docx">{desktop_path}\\APC\\Submission - {uid}.docx</a>)',
+        )
+        dtlbl_3 = QLabel(self, text=f'3. Click "Submit"')
+        l.addWidget(dtlbl_h)
+        l.addWidget(dtlbl_1)
+        l.addWidget(dtlbl_2)
+        l.addWidget(dtlbl_3)
+
+        footer_btns = QWidget(self)
+        footer_btns_layout = QHBoxLayout(footer_btns)
+        go_back = QPushButton(self, text="Go Back")
+        go_back.clicked.connect(self.submitUI)
+        footer_btns_layout.addWidget(go_back)
+        open_formsg = QPushButton(self, text="Open FormSG")
+        open_formsg.clicked.connect(self.open_formsg_link)
+        footer_btns_layout.addWidget(open_formsg)
+
+        l.addWidget(footer_btns)
+
+        self.setLayout(l)
+
+    def open_formsg_link(self):
         webbrowser.open(self.courseInfo.get("submitFormUrl"))
-        pass
+
+    @Slot(QModelIndex)
+    def on_treeView_fileTreeSelector_clicked(self, index):
+        print("tree clicked: {}".format(self.model.filePath(index)))
+        self.model.traverseDirectory(index, callback=self.model.printIndex)
 
     def o_survey_act(self):
         webbrowser.open(self.courseInfo.get("surveyFormUrl"))

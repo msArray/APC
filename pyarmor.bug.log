@@ -1,0 +1,12 @@
+[BUG]: --pack must be an executable file, specfile, "onefile" or "onedir"
+
+## Command Line
+c:\Users\masay\APC\.venv\Scripts\pyarmor gen --pack onefile --windowed -r main.py
+
+## Environments
+Python 3.12.8
+Pyarmor 9.2.7 (trial), 000000, non-profits
+Platform windows.x86_64
+Native windows.amd64
+Home C:\Users\masay\.pyarmor
+

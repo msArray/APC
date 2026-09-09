@@ -16,7 +16,11 @@ dependencies = [
     "platformdirs>=4.11.7",
     "pyarmor>=9.2.7",
     "pydrive2>=1.21.3",
+    "pyinstaller>=6.22.2",
     "pyside6>=6.11.2",
+    "python-docs>=0.1.0",
+    "python-docx>=1.2.0",
+    "pywin32>=312",
     "qasync>=0.28.0",
     "requests>=2.34.2",
 ]

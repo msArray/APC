@@ -2,3 +2,6 @@ credentials.json
 .venv/
 .ruff_cache
 APC
+__pycache__
+dist/
+.pyarmor/
